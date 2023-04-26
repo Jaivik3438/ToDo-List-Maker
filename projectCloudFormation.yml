@@ -1,0 +1,285 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  KeyName:
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+    Description: To-do-list
+    Type: AWS::EC2::KeyPair::KeyName
+Resources:
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: '10.1.0.0/16'
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      Tags:
+        - Key: Name
+          Value: my-vpc
+  PublicSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      CidrBlock: '10.1.1.0/24'
+      VpcId:
+        Ref: VPC
+      AvailabilityZone: us-east-1a
+      MapPublicIpOnLaunch: true 
+      Tags:
+        - Key: Name
+          Value: my-public-subnet
+  PrivateSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      CidrBlock: '10.1.2.0/24'
+      VpcId:
+        Ref: VPC
+      AvailabilityZone: us-east-1a
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: my-private-subnet
+  PublicRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId:
+        Ref: VPC
+      Tags:
+        - Key: Name
+          Value: my-public-route-table
+  PrivateRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId:
+        Ref: VPC
+      Tags:
+        - Key: Name
+          Value: my-private-route-table
+  PublicSubnetRouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId:
+        Ref: PublicSubnet
+      RouteTableId:
+        Ref: PublicRouteTable
+  PrivateSubnetRouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId:
+        Ref: PrivateSubnet
+      RouteTableId:
+        Ref: PrivateRouteTable
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+        - Key: Name
+          Value: my-internet-gateway
+  GatewayAttachment:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId:
+        Ref: VPC
+      InternetGatewayId:
+        Ref: InternetGateway
+  PublicRoute:
+    Type: 'AWS::EC2::Route'
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId:
+        Ref: PublicRouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId:
+        Ref: InternetGateway
+  PrivateRoute:
+    Type: 'AWS::EC2::Route'
+    DependsOn: NatGateway
+    Properties:
+      RouteTableId:
+        Ref: PrivateRouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      NatGatewayId:
+        Ref: NatGateway
+  NatGatewayEIP:
+    Type: 'AWS::EC2::EIP'
+    Properties:
+      Domain: 'vpc'
+  NatGateway:
+    Type: 'AWS::EC2::NatGateway'
+    Properties:
+      SubnetId:
+        Ref: PublicSubnet
+      AllocationId:
+        Fn::GetAtt:
+          - NatGatewayEIP
+          - AllocationId
+      Tags:
+        - Key: Name
+          Value: my-nat-gateway
+  S3Endpoint:
+    Type: "AWS::EC2::VPCEndpoint"
+    DependsOn:
+      - PublicSubnetRouteTableAssociation
+    Properties:
+      VpcEndpointType: "Gateway"
+      ServiceName: "com.amazonaws.us-east-1.s3"
+      VpcId: !Ref VPC
+  LambdaEndpoint:
+    Type: "AWS::EC2::VPCEndpoint"
+    DependsOn:
+      - PublicSubnetRouteTableAssociation
+    Properties:
+      VpcEndpointType: "Interface"
+      ServiceName: "com.amazonaws.us-east-1.lambda"
+      VpcId: !Ref VPC
+      SubnetIds:
+        - !Ref PublicSubnet
+  SNSEndpoint:
+    Type: "AWS::EC2::VPCEndpoint"
+    DependsOn:
+      - PublicSubnetRouteTableAssociation
+    Properties:
+      VpcEndpointType: "Interface"
+      ServiceName: "com.amazonaws.us-east-1.sns"
+      VpcId: !Ref VPC
+      SubnetIds:
+        - !Ref PublicSubnet
+  TextractEndpoint:
+    Type: "AWS::EC2::VPCEndpoint"
+    DependsOn:
+    - PublicSubnetRouteTableAssociation
+    Properties:
+      ServiceName: "com.amazonaws.us-east-1.textract"
+      VpcEndpointType: "Interface"
+      VpcId: !Ref VPC 
+      SubnetIds:
+        - !Ref PublicSubnet
+  DynamoDBEndpoint:
+    Type: "AWS::EC2::VPCEndpoint"
+    DependsOn:
+      - PublicSubnetRouteTableAssociation
+    Properties:
+      VpcEndpointType: "Gateway"
+      ServiceName: "com.amazonaws.us-east-1.dynamodb"
+      VpcId: !Ref VPC
+  ##DynamoDB
+  TodoListRecordsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: todo_list_records_of_users
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: task_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+        - AttributeName: task_id
+          KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+  UserRecordsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: user_data
+      AttributeDefinitions:
+        - AttributeName: email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: email
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+  WriteCapacityScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MaxCapacity: 15
+      MinCapacity: 5
+      ResourceId: !Join
+        - /
+        - - table
+          - !Ref TodoListRecordsTable
+      RoleARN: arn:aws:iam::665349110037:role/LabRole
+      ScalableDimension: dynamodb:table:WriteCapacityUnits
+      ServiceNamespace: dynamodb
+  ##Lambda 
+  MyLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: EmailSendingFunction
+      Code:
+        S3Bucket: es1-jaivik-dal-b00915987
+        S3Key: Lambda.zip
+      Handler: index.handler
+      Runtime: nodejs14.x
+      Role: arn:aws:iam::665349110037:role/LabRole
+  ##SNS
+  MySNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: "My SNS Topic"
+      TopicName: "sendemailasreminder"
+  ##ElasticBeanstack deployment
+  EBSApplication:
+    Type: AWS::ElasticBeanstalk::Application
+    Properties:
+      Description: EBS Backend for To-do-list
+  EBSApplicationVersion:
+    Type: AWS::ElasticBeanstalk::ApplicationVersion
+    Properties:
+      ApplicationName: !Ref EBSApplication
+      Description: EBS Backend for TO_DO_LIST Version 1.0
+      SourceBundle:
+        S3Bucket:  "es1-jaivik-dal-b00915987"
+        S3Key: "Combine.zip"
+  EBSConfigurationTemplate:
+    Type: AWS::ElasticBeanstalk::ConfigurationTemplate
+    Properties:
+      ApplicationName: !Ref EBSApplication
+      Description: EBS TO-DO-List Template
+      OptionSettings:
+      - Namespace: aws:elasticbeanstalk:application:environment
+        OptionName: "AWS_ACCESS_KEY_ID"
+        Value: "ASIAZV2PFXEKX2O7PMJI"  
+      - Namespace: 'aws:elasticbeanstalk:application:environment'
+        OptionName: 'AWS_SECRET_ACCESS_KEY_ID'
+        Value: 'XP1Gn57OIfhgS/LLI9CcbPyEz6eqseJHqXWy5vxj'
+      - Namespace: 'aws:elasticbeanstalk:application:environment'
+        OptionName: 'AWS_SESSION_TOKEN'
+        Value: 'FwoGZXIvYXdzENX//////////wEaDMRplB03NIWavz+h2yLMAdAwqgh9stFPN57zM45onxBGVKmnUrkQAi3cir9d1qf/Os+a0SKtyuOVMAsHFscmfGz4cnjSmPDogdB/wNjaaj2oiEoDjIBLhZ8MZU6LehY3pls5xRPao3NAEuIy0dc89oHIXFvRUPXfEAaCwXlAMvWafW4dsvyQ1qqp4sc6vciCMILUb5ROaESmBEV4XOpAn6wThrF+HxuwMOfjWXyiOhpa/hN7DIWQgcUnO/Bv1Yu1Cqg6mYAaV64KdOmRY4Wk5wT/eA4Hid5myRCrwCiT6tahBjItjDvMU5uswppYl2qGN6cKtFjeZ7ymyjAaY8wm30obGZHciIjTFUm4kg3nBFOz'
+      - Namespace: 'aws:elasticbeanstalk:application:environment'
+        OptionName: 'AWS_DEFAULT_REGION'
+        Value: 'us-east-1'  
+      - Namespace: aws:autoscaling:launchconfiguration
+        OptionName: EC2KeyName   
+        Value: !Ref KeyName
+      - Namespace: aws:autoscaling:launchconfiguration
+        OptionName: IamInstanceProfile   
+        Value: !Ref MyInstanceProfile
+      SolutionStackName: 64bit Amazon Linux 2 v5.8.0 running Node.js 16
+  EBSEnvironment:
+    Type: AWS::ElasticBeanstalk::Environment
+    Properties:
+      ApplicationName: !Ref EBSApplication
+      Description: EBS Backend for TO_DO_LIST Environment
+      TemplateName: !Ref EBSConfigurationTemplate
+      VersionLabel: !Ref EBSApplicationVersion
+      OptionSettings:
+        - Namespace: aws:ec2:vpc
+          OptionName: VPCId
+          Value: !Ref VPC
+        - Namespace: aws:ec2:vpc
+          OptionName: Subnets
+          Value: !Join [",", [!Ref PublicSubnet, !Ref PrivateSubnet]]
+        - Namespace: aws:ec2:vpc
+          OptionName: ELBSubnets
+          Value: !Ref PublicSubnet
+  MyInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties: 
+      Path: "/"
+      Roles: ["LabRole"]
+Outputs:
+  MySNSTopicArn:
+    Value: !Ref MySNSTopic
+      
